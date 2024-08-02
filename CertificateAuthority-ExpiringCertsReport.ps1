@@ -177,9 +177,9 @@ Expired in past $ExpiredCertAge days: $(($certdata | Where-Object { $_.Status -e
     Write-Output "Sending report email"
     if ($SendTo -ne "" -and $SendFrom -ne "") {
       Send-MailMessage -Subject $EmailSubject -Body $Body -SmtpServer $SMTPServer -To $SendTo -From $SendFrom -Attachments $tmpFile -BodyAsHtml
-  } else {
-      Write-Output "Email sending parameters are not properly configured."
-  }
+    } else {
+        Write-Output "Email sending parameters are not properly configured."
+    }
   
 }
 
@@ -192,8 +192,18 @@ catch {
     Write-Output "Saving transcript to $transcriptPath"
     
     # Send PowerShell transcript as error email
-    Stop-Transcript
-    Send-MailMessage -Subject "Error: $Subject" -Body "Script encountered an error: $_`nStack Trace: $($_.Exception.StackTrace)" -SmtpServer $SMTPServer -To $SendErrorTo -From $SendFrom -Attachments $transcriptPath -BodyAsHtml
+    if ($SendFrom -ne "") {
+      if ($SendErrorTo -eq "") {
+        $SendErrorTo = $SendFrom
+      }
+      Stop-Transcript
+      Send-MailMessage -Subject "Error: $Subject" -Body "Script encountered an error: $_`nStack Trace: $($_.Exception.StackTrace)" -SmtpServer $SMTPServer -To $SendErrorTo -From $SendFrom -Attachments $transcriptPath -BodyAsHtml
+    }
+    else{
+       Write-Output "Email sending parameters are not properly configured."
+       Stop-Transcript
+    }
+    
     Exit
 }
 
