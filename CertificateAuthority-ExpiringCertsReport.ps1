@@ -49,10 +49,10 @@
     Author: Jeff Cloherty [https://github.com/jeffcloherty/]
     Created: 3/9/2023
     Version: 1.1
-    Last Updated: 8/1/2024
+    Last Updated: 8/2/2024
     Revision History:
-    - 1.0: Initial version
-    - 1.1: All script variables defined as parameters, added error handling and notifications, added script synopsis, and updated comments for publishing.
+    - 1.0  : Initial version
+    - 1.1  : All configuration variables defined as parameters, added error handling and notifications, added script synopsis, and updated comments for publishing.
 #>
 
 [CmdletBinding()]
@@ -76,14 +76,14 @@ param (
 
 # Setup logging and transcript
 $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$logDir = "$PSScriptRoot\Logs"
-if (-not (Test-Path -Path $logDir)) {
-    New-Item -Path $logDir -ItemType Directory | Out-Null
+$LogDir = "$PSScriptRoot\Logs"
+if (-not (Test-Path -Path $LogDir)) {
+    New-Item -Path $LogDir -ItemType Directory | Out-Null
 }
 $TranscriptPath = if(($MyInvocation.InvocationName).Length -gt ($MyInvocation.MyCommand).Length) {
-        "$logDir\$(($MyInvocation.InvocationName).Split('\')[-1])_$Timestamp.txt"
+        "$LogDir\$(($MyInvocation.InvocationName).Split('\')[-1])_$Timestamp.txt"
     } else {
-        "$logDir\$($MyInvocation.MyCommand)_$Timestamp.txt"
+        "$LogDir\$($MyInvocation.MyCommand)_$Timestamp.txt"
     }
 Start-Transcript -Path $TranscriptPath
 
@@ -95,7 +95,7 @@ try {
     # Pull certificate info from CertUtil and convert to PS object
     $AllCertificates = ConvertFrom-Csv (certutil.exe -view log csv)
 
-    $now = Get-Date
+    $CurrentDate = Get-Date
 
     # Check certificate expiration and add Status property for each item
     foreach($Certificate in $AllCertificates) {
@@ -103,10 +103,10 @@ try {
             # Parse certificate expiration date
             $ThisCertExpirationDate = [datetime]$Certificate.'Certificate Expiration Date'
             # Determine the certificate status
-            if ($ThisCertExpirationDate -gt $now.AddDays(-1 * $ExpiredCertAge)) {
-                $ThisCertState = if ($ThisCertExpirationDate -lt $now) {
+            if ($ThisCertExpirationDate -gt $CurrentDate.AddDays(-1 * $ExpiredCertAge)) {
+                $ThisCertState = if ($ThisCertExpirationDate -lt $CurrentDate) {
                     'Expired'
-                } elseif ($ThisCertExpirationDate -lt $now.AddDays($ExpiresInDays)) {
+                } elseif ($ThisCertExpirationDate -lt $CurrentDate.AddDays($ExpiresInDays)) {
                     'Review'
                 } else {
                     'Valid'
