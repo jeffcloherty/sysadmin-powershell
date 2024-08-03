@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
     Generate a report from a Certificate Authority listing certificates that have recently expired or will expire soon, and send the report via email using an SMTP relay.
+    Designed to be run as a scheduled task on an intermediate CA. 
 
 .DESCRIPTION
     This script generates a scheduled report for certificate administrators to monitor certificates that need to be renewed or confirmed for planned expiration. It retrieves certificate data from the Certificate Authority, processes the data to identify certificates that are expired or expiring soon, and sends a summary report via email. In case of errors, the script sends an error notification with a transcript.
@@ -74,17 +75,17 @@ param (
 )
 
 # Setup logging and transcript
-$pathTimestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $logDir = "$PSScriptRoot\Logs"
 if (-not (Test-Path -Path $logDir)) {
     New-Item -Path $logDir -ItemType Directory | Out-Null
 }
-$transcriptPath = if(($MyInvocation.InvocationName).Length -gt ($MyInvocation.MyCommand).Length) {
-        "$logDir\$(($MyInvocation.InvocationName).Split('\')[-1])_$pathTimestamp.txt"
+$TranscriptPath = if(($MyInvocation.InvocationName).Length -gt ($MyInvocation.MyCommand).Length) {
+        "$logDir\$(($MyInvocation.InvocationName).Split('\')[-1])_$Timestamp.txt"
     } else {
-        "$logDir\$($MyInvocation.MyCommand)_$pathTimestamp.txt"
+        "$logDir\$($MyInvocation.MyCommand)_$Timestamp.txt"
     }
-Start-Transcript -Path $transcriptPath
+Start-Transcript -Path $TranscriptPath
 
 Write-Output "Script started at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Output "Parameters: ExpiredCertAge=$ExpiredCertAge, ExpiresInDays=$ExpiresInDays, SendFrom=$SendFrom, SendTo=$SendTo, SMTPServer=$SMTPServer, NoCleanup=$NoCleanup"
@@ -92,55 +93,56 @@ Write-Output "Parameters: ExpiredCertAge=$ExpiredCertAge, ExpiresInDays=$Expires
 # Main script logic
 try {
     # Pull certificate info from CertUtil and convert to PS object
-    $certdata = ConvertFrom-Csv (certutil.exe -view log csv)
+    $AllCertificates = ConvertFrom-Csv (certutil.exe -view log csv)
 
     $now = Get-Date
 
     # Check certificate expiration and add Status property for each item
-    foreach($certificate in $certdata) {
+    foreach($Certificate in $AllCertificates) {
         try {
             # Parse certificate expiration date
-            $certexpiration = [datetime]$certificate.'Certificate Expiration Date'
+            $ThisCertExpirationDate = [datetime]$Certificate.'Certificate Expiration Date'
             # Determine the certificate status
-            if ($certexpiration -gt $now.AddDays(-1 * $ExpiredCertAge)) {
-                if ($certexpiration -lt $now) {
-                    $certstate = 'Expired'
-                } elseif ($certexpiration -lt $now.AddDays($ExpiresInDays)) {
-                    $certstate = 'Review'
+            if ($ThisCertExpirationDate -gt $now.AddDays(-1 * $ExpiredCertAge)) {
+                $ThisCertState = if ($ThisCertExpirationDate -lt $now) {
+                    'Expired'
+                } elseif ($ThisCertExpirationDate -lt $now.AddDays($ExpiresInDays)) {
+                    'Review'
                 } else {
-                    $certstate = 'Valid'
+                    'Valid'
                 }
-
-                # Add Status property to the certificate
-                $certificate | Add-Member -NotePropertyName Status -NotePropertyValue $certstate
-                $certificate.'Request ID' = [int]$certificate.'Request ID'
             }
+
+            # Add Status property to the certificate
+            $Certificate | Add-Member -NotePropertyName Status -NotePropertyValue $ThisCertState
+            $Certificate.'Request ID' = [int]$Certificate.'Request ID'
+            
         } catch {
-            Write-Host $certificate.'Request ID'
+            Write-Host $Certificate.'Request ID'
         }
     }
 
     # Create a temporary file
-    $tmpFile = [System.IO.Path]::GetTempFileName()
+    $TempFile = [System.IO.Path]::GetTempFileName()
 
     # Export data to file
-    $certdata | Where-Object { $_.Status -ne '' } |
+    $AllCertificates | Where-Object { $_.Status -ne '' } |
         Sort-Object -Property Status, 'Request ID' |
         Select-Object Status, 'Request ID', 'Requester Name', 'Issued Common Name', 'Certificate Effective Date', 'Certificate Expiration Date', 'Serial Number' |
-        Export-Csv -Path $tmpFile -NoTypeInformation
+        Export-Csv -Path $TempFile -NoTypeInformation
 
     # Rename to something useful
-    $tmpFile = (Rename-Item -Path $tmpFile -NewName "CA-CertReport_$(Get-Date -Format 'MM-dd-yyyy').csv" -PassThru).FullName
+    $TempFile = (Rename-Item -Path $TempFile -NewName "CA-CertReport_$(Get-Date -Format 'MM-dd-yyyy').csv" -PassThru).FullName
 
     # Format email body
-    $Body = @"
+    $EmailBody = @"
 Attached is the weekly Certificate Report.
 <p>
 Certificate Summary
 <br>
-Current Total: $(($certdata | Where-Object { $_.Status -eq 'Valid' -or $_.Status -eq 'Review' }).Count)
+Current Total: $(($AllCertificates | Where-Object { $_.Status -eq 'Valid' -or $_.Status -eq 'Review' }).Count)
 <p>
-Expiring within $ExpiresInDays days: $(($certdata | Where-Object { $_.Status -eq 'Review' }).Count)
+Expiring within $ExpiresInDays days: $(($AllCertificates | Where-Object { $_.Status -eq 'Review' }).Count)
 <table>
     <tr>
         <th>Issued Common Name</th>
@@ -148,7 +150,7 @@ Expiring within $ExpiresInDays days: $(($certdata | Where-Object { $_.Status -eq
         <th>Requester Name</th>
         <th>Request ID</th>
     </tr>
-    $(($certdata | Where-Object { $_.Status -eq 'Review' }) | ForEach-Object { "<tr>
+    $(($AllCertificates | Where-Object { $_.Status -eq 'Review' }) | ForEach-Object { "<tr>
     <td>$($_.'Issued Common Name')</td>
     <td>$($_.'Certificate Expiration Date')</td>
     <td>$($_.'Requester Name')</td>
@@ -156,7 +158,7 @@ Expiring within $ExpiresInDays days: $(($certdata | Where-Object { $_.Status -eq
     </tr>" })
 </table>
 <br>
-Expired in past $ExpiredCertAge days: $(($certdata | Where-Object { $_.Status -eq 'Expired' }).Count)
+Expired in past $ExpiredCertAge days: $(($AllCertificates | Where-Object { $_.Status -eq 'Expired' }).Count)
 <table>
     <tr>
         <th>Issued Common Name</th>
@@ -164,7 +166,7 @@ Expired in past $ExpiredCertAge days: $(($certdata | Where-Object { $_.Status -e
         <th>Requester Name</th>
         <th>Request ID</th>
     </tr>
-    $(($certdata | Where-Object { $_.Status -eq 'Expired' }) | ForEach-Object { "<tr>
+    $(($AllCertificates | Where-Object { $_.Status -eq 'Expired' }) | ForEach-Object { "<tr>
     <td>$($_.'Issued Common Name')</td>
     <td>$($_.'Certificate Expiration Date')</td>
     <td>$($_.'Requester Name')</td>
@@ -176,7 +178,7 @@ Expired in past $ExpiredCertAge days: $(($certdata | Where-Object { $_.Status -e
     # Send summary and report via email
     Write-Output "Sending report email"
     if ($SendTo -ne "" -and $SendFrom -ne "") {
-      Send-MailMessage -Subject $EmailSubject -Body $Body -SmtpServer $SMTPServer -To $SendTo -From $SendFrom -Attachments $tmpFile -BodyAsHtml
+      Send-MailMessage -Subject $EmailSubject -Body $EmailBody -SmtpServer $SMTPServer -To $SendTo -From $SendFrom -Attachments $TempFile -BodyAsHtml
     } else {
         Write-Output "Email sending parameters are not properly configured."
     }
@@ -186,10 +188,10 @@ Expired in past $ExpiredCertAge days: $(($certdata | Where-Object { $_.Status -e
 catch {
     Write-Output "Error: $_"
     Write-Output "Stack Trace: $($_.Exception.StackTrace)"
-    Write-Output "Deleting temp report file: $tmpFile"
-    Remove-Item $tmpFile
+    Write-Output "Deleting temp report file: $TempFile"
+    Remove-Item $TempFile
     Write-Output "Script ended at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    Write-Output "Saving transcript to $transcriptPath"
+    Write-Output "Saving transcript to $TranscriptPath"
     
     # Send PowerShell transcript as error email
     if ($SendFrom -ne "") {
@@ -197,7 +199,7 @@ catch {
         $SendErrorTo = $SendFrom
       }
       Stop-Transcript
-      Send-MailMessage -Subject "Error: $Subject" -Body "Script encountered an error: $_`nStack Trace: $($_.Exception.StackTrace)" -SmtpServer $SMTPServer -To $SendErrorTo -From $SendFrom -Attachments $transcriptPath -BodyAsHtml
+      Send-MailMessage -Subject "Error: $Subject" -Body "Script encountered an error: $_`nStack Trace: $($_.Exception.StackTrace)" -SmtpServer $SMTPServer -To $SendErrorTo -From $SendFrom -Attachments $TranscriptPath -BodyAsHtml
     }
     else{
        Write-Output "Email sending parameters are not properly configured."
@@ -210,14 +212,14 @@ catch {
 finally {
     if (-not $NoCleanup) {
         # Clean up temporary report file
-        Write-Output "Deleting temp report file: $tmpFile"
-        Remove-Item $tmpFile
+        Write-Output "Deleting temp report file: $TempFile"
+        Remove-Item $TempFile
     } else {
-        $tmpFile = (Move-Item -Path $tmpFile -Destination "$($PSScriptRoot)\Logs\" -PassThru).FullName
-        Write-Output "Report CSV saved to $tmpFile"
+        $TempFile = (Move-Item -Path $TempFile -Destination "$($PSScriptRoot)\Logs\" -PassThru).FullName
+        Write-Output "Report CSV saved to $TempFile"
     }
 
     Write-Output "Script ended at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    Write-Output "Saving transcript to $transcriptPath"
+    Write-Output "Saving transcript to $TranscriptPath"
     Stop-Transcript
 }
