@@ -54,18 +54,19 @@
     .\FolderFlattenAndFileRename.ps1 -SourceFolder C:\SourceFolder -CopyDestination C:\DestinationFolder -Depth 1 -WhatIf
 
 .NOTES
-    Author: Jeff Cloherty
+    Author: Jeff Cloherty [https://github.com/jeffcloherty/]
     Created: 7/17/2024
     Version: 1.0.1
-    Last Updated: 7/19/2024
+    Last Updated: 8/8/2024
     Revision History:
-    - 1.0.0: Initial version
-    - 1.0.1: Added folder handling for SMB network shares.
-             Added configuration parameters to log output.
-             Updated function names to only use PowerShell approved verbs.
-             Fixed error when trying to rename or copy a folder to an existing folder.
-    - 1.0.2  Added CreateZip option.
-             Added CleanupFiles option.
+    - 1.0.0 Initial version
+    - 1.0.1 Added folder handling for SMB network shares.
+            Added configuration parameters to log output.
+            Updated function names to only use PowerShell approved verbs.
+            BUGFIX: Name collision handling when trying to rename or copy a folder.
+    - 1.0.2 Added CreateZip option.
+            Added CleanupFiles option.
+    - 1.0.3 BUGFIX: Accept SMB SourceFolder with '$' character in path. 
 #>
 
 ### Default Parameters
@@ -138,7 +139,7 @@ function New-LogRecord {
         Message = $Message
     }
 
-    $logEntry | Export-Csv -Path $logFilePath -Append -NoTypeInformation
+    $logEntry | Export-Csv -LiteralPath $logFilePath -Append -NoTypeInformation
 
     # Print to console based on Quiet switch
     if($Quiet){
@@ -198,10 +199,10 @@ function Move-File {
     )
     try {
         # If file path exists, rename file to be moved.
-        if (Test-Path "$TargetFolder\$($File.Name)") {
+        if (Test-Path -LiteralPath "$TargetFolder\$($File.Name)") {
             for ($i = 1; $i -le 100; $i++) {
                 $fileName = "$($file.BaseName)-$i$($file.Extension)"
-                if (-not (Test-Path "$TargetFolder\$fileName")) {
+                if (-not (Test-Path -LiteralPath "$TargetFolder\$fileName")) {
                     break
                 }
             }
@@ -234,10 +235,10 @@ function Rename-Folder {
         $newName = $Folder.Name -replace $RegexPattern, $ReplacementCharacter
         
         # Check if folder with same name already exists
-        if (Test-Path (Join-Path -Path $Folder.Parent -ChildPath $newName)) {
+        if (Test-Path -LiteralPath (Join-Path -Path $Folder.Parent -ChildPath $newName)) {
             for ($i = 1; $i -le 100; $i++) {
                 $newName = "$newName-$i"
-                if (-not (Test-Path (Join-Path -Path $Folder.Parent -ChildPath $newName))) {
+                if (-not (Test-Path -LiteralPath (Join-Path -Path $Folder.Parent -ChildPath $newName))) {
                     break
                 }
             }
@@ -272,10 +273,10 @@ function Rename-File {
         $newName = "${cleanName}$fileExt"
         
         # Check if file with same name already exists
-        if (Test-Path (Join-Path -Path $File.Directory.FullName -ChildPath $newName)) {
+        if (Test-Path -LiteralPath (Join-Path -Path $File.Directory.FullName -ChildPath $newName)) {
             for ($i = 1; $i -le 100; $i++) {
                 $newName = "${cleanName}-${i}$fileExt"
-                if (-not (Test-Path (Join-Path -Path $File.Directory.FullName -ChildPath $newName))) {
+                if (-not (Test-Path -LiteralPath (Join-Path -Path $File.Directory.FullName -ChildPath $newName))) {
                     break
                 }
             }
@@ -349,10 +350,10 @@ Function Invoke-CreateZip{
         $ext = ".zip"
         $ZipName = "${name}$ext"
         # Check if file with same name already exists
-        if (Test-Path (Join-Path -Path (Split-Path $FolderToZip -Parent) -ChildPath $ZipName)) {
+        if (Test-Path -LiteralPath (Join-Path -Path (Split-Path $FolderToZip -Parent) -ChildPath $ZipName)) {
             for ($i = 1; $i -le 100; $i++) {
                 $ZipName = "$name-${i}$ext"
-                if (-not (Test-Path (Join-Path -Path (Split-Path $FolderToZip -Parent) -ChildPath $ZipName))) {
+                if (-not (Test-Path -LiteralPath (Join-Path -Path (Split-Path $FolderToZip -Parent) -ChildPath $ZipName))) {
                     break
                 }
 
@@ -363,10 +364,10 @@ Function Invoke-CreateZip{
         
         # Create the zip file
         if ($WhatIf) {
-            $script:ZipFile = Compress-Archive -Path $FolderToZip -DestinationPath $zipFileName -WhatIf
+            $script:ZipFile = Compress-Archive -LiteralPath $FolderToZip -DestinationPath $zipFileName -WhatIf
             New-LogRecord -LogType "CreateZip" -ActionStatus "expected" -TargetObject $zipFileName
         }else{
-            $script:ZipFile = Compress-Archive -Path $FolderToZip -DestinationPath $zipFileName -PassThru
+            $script:ZipFile = Compress-Archive -LiteralPath $FolderToZip -DestinationPath $zipFileName -PassThru
             New-LogRecord -LogType "CreateZip" -ActionStatus "complete" -TargetObject $script:ZipFile.FullName
         }
     }
@@ -403,7 +404,7 @@ function Get-DirectoryStats {
     )
 
     # Ensure the target directory exists
-    if (-not (Test-Path -Path $TargetDirectory -PathType Container)) {
+    if (-not (Test-Path -LiteralPath $TargetDirectory -PathType Container)) {
         throw "The specified path '$TargetDirectory' is not a valid directory."
     }
 
@@ -411,8 +412,8 @@ function Get-DirectoryStats {
     $totalSize = 0
 
     # Get all files and directories in the target directory and its subdirectories
-    $items = Get-ChildItem -Path $TargetDirectory -Recurse -File -Force
-    $folders = Get-ChildItem -Path $TargetDirectory -Recurse -Directory -Force
+    $items = Get-ChildItem -LiteralPath $TargetDirectory -Recurse -File -Force
+    $folders = Get-ChildItem -LiteralPath $TargetDirectory -Recurse -Directory -Force
 
     # Calculate total size and count of files
     foreach ($item in $items) {
@@ -453,7 +454,7 @@ function Initialize-SourceFolder {
         $inputPath = [string](Read-Host "Root folder to process: ($SourceFolder)")
         if ($inputPath -eq "") {
             break
-        } elseif (Test-Path -Path $inputPath) {
+        } elseif (Test-Path -LiteralPath $inputPath) {
             $script:SourceFolder = $inputPath
             break
         } else {
@@ -472,7 +473,7 @@ function Initialize-CopyDestination {
         } elseif((Join-Path -Path (Split-Path $SourceFolder -Parent) -ChildPath (Split-Path $SourceFolder -Leaf)) -eq (Join-Path -Path (Split-Path $inputPath -Parent) -ChildPath (Split-Path $inputPath -Leaf))){
             Write-Output "[$(Get-Timestamp)] Destination path cannot be set to source path."
             continue
-        } elseif ((Test-Path (Split-Path -Path $inputPath))) {
+        } elseif ((Test-Path -LiteralPath (Split-Path -Path $inputPath))) {
             $script:CopyDestination = $inputPath
             break
         } else {
@@ -519,7 +520,7 @@ $scriptTitle = "FolderFlattenAndFileRename.ps1"
 $pathTimestamp = $(Get-Date -Format "yyyyMMdd_HHmmss")
 $logFilePath = "$PSScriptRoot\Logs\${scriptTitle}_$pathTimestamp.csv"
 $transcriptPath = "$PSScriptRoot\Logs\${scriptTitle}_$pathTimestamp.txt"
-Start-Transcript -Path $transcriptPath
+Start-Transcript -LiteralPath $transcriptPath
 
 $script:ZipFile
 
@@ -568,7 +569,7 @@ try {
         }
         
         # Verify source directory is available, prompt user if invalid.
-        if(Test-Path -Path $SourceFolder){
+        if(Test-Path -LiteralPath $SourceFolder){
             New-LogRecord -LogType "VerifyFolder" -ActionStatus "completed" -TargetObject $SourceFolder
         }else{
             Initialize-SourceFolder
@@ -579,9 +580,9 @@ try {
             if((Join-Path -Path (Split-Path $SourceFolder -Parent) -ChildPath (Split-Path $SourceFolder -Leaf)) -eq (Join-Path -Path (Split-Path $CopyDestination -Parent) -ChildPath (Split-Path $CopyDestination -Leaf))){
                 Initialize-CopyDestination
             }
-            elseif(Test-Path -Path $CopyDestination){
+            elseif(Test-Path -LiteralPath $CopyDestination){
                 New-LogRecord -LogType "VerifyFolder" -ActionStatus "completed" -TargetObject $CopyDestination
-            }elseif(Test-Path (Split-Path -Path $CopyDestination)){
+            }elseif(Test-Path -LiteralPath (Split-Path -Path $CopyDestination)){
                 New-LogRecord -LogType "VerifyFolder" -ActionStatus "completed" -TargetObject (Split-Path -Path $CopyDestination)
             }else{
                 Initialize-CopyDestination
@@ -591,7 +592,7 @@ try {
 
     }else{
         # Verify source directory is available, exit script if invalid.
-        if(Test-Path -Path $SourceFolder){
+        if(Test-Path -LiteralPath $SourceFolder){
             New-LogRecord -LogType "VerifyFolder" -ActionStatus "completed" -TargetObject $SourceFolder
         }else{
             New-LogRecord -LogType "VerifyFolder" -ActionStatus "error" -TargetObject $SourceFolder -ErrMsg "Source folder is inaccessible or does not exist."
@@ -600,9 +601,9 @@ try {
         
         if(-not $ModifyOriginal){
         # Verify destination directory is available, exit script if invalid.
-            if(Test-Path -Path $CopyDestination){
+            if(Test-Path -LiteralPath $CopyDestination){
                 New-LogRecord -LogType "VerifyFolder" -ActionStatus "completed" -TargetObject $CopyDestination
-            }elseif(Test-Path (Split-Path -Path $CopyDestination)){
+            }elseif(Test-Path -LiteralPath (Split-Path -Path $CopyDestination)){
                 New-LogRecord -LogType "VerifyFolder" -ActionStatus "completed" -TargetObject (Split-Path -Path $CopyDestination)
             }else{
                 New-LogRecord -LogType "VerifyFolder" -ActionStatus "error" -TargetObject $CopyDestination -ErrMsg "Destination folder is inaccessible or does not exist."
@@ -622,9 +623,9 @@ try {
     # Create copy of root folder to be processed
         try{
             # Create destination folder if does not exist in parent directory
-            if (-Not (Test-Path -Path $CopyDestination)){
+            if (-Not (Test-Path -LiteralPath $CopyDestination)){
                 try{
-                    mkdir -path $CopyDestination | Out-Null
+                    mkdir -Path $CopyDestination | Out-Null
                     New-LogRecord -LogType "CreateFolder" -ActionStatus "completed" -TargetObject $CopyDestination
                 }
                 catch{
@@ -633,7 +634,7 @@ try {
                 }
             }
 
-            Copy-Item -Path (Join-Path -Path $SourceFolder -ChildPath '*') -Destination $CopyDestination -Recurse -Force -ErrorAction Stop
+            Get-ChildItem -LiteralPath $SourceFolder | ForEach-Object {Copy-Item -LiteralPath $_ -Destination $CopyDestination -Recurse -Force -ErrorAction Stop}
             New-LogRecord -LogType "CopyFolder" -ActionStatus "complete" -TargetObject $SourceFolder -Destination $CopyDestination
         }
         catch {
@@ -677,7 +678,7 @@ try {
                 Write-Output "[$(Get-Timestamp)] Will not delete destination folder when -ModifyOriginal is enabled"
                 Write-Output "[$(Get-Timestamp)]"
             }else{
-                if((Test-Path -Path $ZipFile.FullName) -and (Get-Item $ZipFile).Length -gt 0){
+                if((Test-Path -LiteralPath $ZipFile.FullName) -and (Get-Item $ZipFile).Length -gt 0){
                     # Delete destination folder
                     Write-Output "[$(Get-Timestamp)] Cleanup: deleting destination folder"
                     Invoke-CleanupFiles -FolderToDelete $CopyDestination
@@ -746,7 +747,7 @@ finally {
         }
     }
     Write-Output ""
-    $logData = Import-Csv -Path $logFilePath
+    $logData = Import-Csv -LiteralPath $logFilePath
     $summary = $logData | Where-Object {$_.LogType -notlike "get*" -and $_.LogType -notlike "set*" -and $_.LogType -notlike "verify*"} |
                     Group-Object -Property LogType | 
                     Select-Object Name, Count
@@ -760,4 +761,4 @@ finally {
 }
 
 # Clean up
-Write-Output "[$(Get-Timestamp)] Script completed. Log and transcript saved to $PSScriptRoot."
+Write-Output "[$(Get-Timestamp)] Script completed. Log and transcript saved to $PSScriptRoot\Logs\"
