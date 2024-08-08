@@ -66,7 +66,8 @@
             BUGFIX: Name collision handling when trying to rename or copy a folder.
     - 1.0.2 Added CreateZip option.
             Added CleanupFiles option.
-    - 1.0.3 BUGFIX: Accept SMB SourceFolder with '$' character in path. 
+    - 1.0.3 BUGFIX: Accept SMB SourceFolder with '$' character in path.
+            Commands and logic edited to be compatible with PowerShell 5.1 (Removed PowerShell 6/7 advanced features.)
 #>
 
 ### Default Parameters
@@ -363,12 +364,13 @@ Function Invoke-CreateZip{
         $zipFileName = (Join-Path -Path (Split-Path $FolderToZip -Parent) -ChildPath $ZipName)
         
         # Create the zip file
+        $script:ZipFile = $zipFileName
         if ($WhatIf) {
-            $script:ZipFile = Compress-Archive -LiteralPath $FolderToZip -DestinationPath $zipFileName -WhatIf
+            Compress-Archive -LiteralPath $FolderToZip -DestinationPath $zipFileName -WhatIf
             New-LogRecord -LogType "CreateZip" -ActionStatus "expected" -TargetObject $zipFileName
         }else{
-            $script:ZipFile = Compress-Archive -LiteralPath $FolderToZip -DestinationPath $zipFileName -PassThru
-            New-LogRecord -LogType "CreateZip" -ActionStatus "complete" -TargetObject $script:ZipFile.FullName
+            Compress-Archive -LiteralPath $FolderToZip -DestinationPath $zipFileName
+            New-LogRecord -LogType "CreateZip" -ActionStatus "complete" -TargetObject $script:ZipFile
         }
     }
     catch{
@@ -516,10 +518,21 @@ function Initialize-WhatIf {
 ### Main script logic
 
 # Setup logging and transcript
-$scriptTitle = "FolderFlattenAndFileRename.ps1"
-$pathTimestamp = $(Get-Date -Format "yyyyMMdd_HHmmss")
-$logFilePath = "$PSScriptRoot\Logs\${scriptTitle}_$pathTimestamp.csv"
-$transcriptPath = "$PSScriptRoot\Logs\${scriptTitle}_$pathTimestamp.txt"
+$Timestamp = $(Get-Date -Format "yyyyMMdd_HHmmss")
+$LogDir = "$PSScriptRoot\Logs"
+if (-not (Test-Path -Path $LogDir)) {
+    New-Item -Path $LogDir -ItemType Directory | Out-Null
+}
+$logFilePath = if(($MyInvocation.InvocationName).Length -gt ($MyInvocation.MyCommand).Length) {
+        "$LogDir\$(($MyInvocation.InvocationName).Split('\')[-1])_$Timestamp.csv"
+    } else {
+        "$LogDir\$($MyInvocation.MyCommand)_$Timestamp.csv"
+    }
+$TranscriptPath = if(($MyInvocation.InvocationName).Length -gt ($MyInvocation.MyCommand).Length) {
+        "$LogDir\$(($MyInvocation.InvocationName).Split('\')[-1])_$Timestamp.txt"
+    } else {
+        "$LogDir\$($MyInvocation.MyCommand)_$Timestamp.txt"
+    }
 Start-Transcript -LiteralPath $transcriptPath
 
 $script:ZipFile
@@ -634,7 +647,7 @@ try {
                 }
             }
 
-            Get-ChildItem -LiteralPath $SourceFolder | ForEach-Object {Copy-Item -LiteralPath $_ -Destination $CopyDestination -Recurse -Force -ErrorAction Stop}
+            Get-ChildItem -LiteralPath $SourceFolder | ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination $CopyDestination -Recurse -Force -ErrorAction Stop}
             New-LogRecord -LogType "CopyFolder" -ActionStatus "complete" -TargetObject $SourceFolder -Destination $CopyDestination
         }
         catch {
@@ -733,8 +746,9 @@ finally {
             }
             Write-Output @"
 
-        $($script:ZipFile.Name)
-        - Path            : $($script:ZipFile.FullName)
+    Compressed Zip Archive:
+        - FileName        : $(Split-Path $script:ZipFile -Leaf)
+        - Path            : $(Split-Path $script:ZipFile -Parent)
         - Files           : $($ZipInfo.Entries.count)
         - Raw Archive Size: $(Format-Size $ZipFileSize)
         - Compressed  Size: $(Format-Size $ZipCompressedFileSize)
