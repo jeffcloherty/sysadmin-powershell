@@ -26,6 +26,10 @@
     Deletes the modified CopyDestination folder or the modified source folder if -ModifyOriginal is enabled.
     Can only be used with the -CreateZip option.
 
+.PARAMETER KeepSessionAlive
+    If set, will send a 'F15' keypress to the host every 60 seconds.
+    This attempts to keep the users desktop session active for the duration of the script to prevent automatic idle timeout and user log off before script is completed. 
+
 .PARAMETER WhatIf
     If set, will create a report with all expected changes without modifying folders or files.
 
@@ -45,7 +49,7 @@
     .\FolderFlattenAndFileRename.ps1
 
 .EXAMPLE
-    .\FolderFlattenAndFileRename.ps1 -SourceFolder C:\SourceFolder -CopyDestination C:\DestinationFolder -Depth 3 -CreateZip -CleanupFiles -NoPrompt
+    .\FolderFlattenAndFileRename.ps1 -SourceFolder C:\SourceFolder -CopyDestination C:\DestinationFolder -Depth 3 -CreateZip -CleanupFiles -NoPrompt -KeepSessionAlive
 
 .EXAMPLE
     .\FolderFlattenAndFileRename.ps1 -SourceFolder C:\SourceFolder -ModifyOriginal -ConfirmDestructiveProcess -Quiet -CreateZip -NoPrompt
@@ -56,8 +60,8 @@
 .NOTES
     Author: Jeff Cloherty [https://github.com/jeffcloherty/]
     Created: 7/17/2024
-    Version: 1.0.1
-    Last Updated: 8/8/2024
+    Version: 1.0.4
+    Last Updated: 8/9/2024
     Revision History:
     - 1.0.0 Initial version
     - 1.0.1 Added folder handling for SMB network shares.
@@ -68,6 +72,8 @@
             Added CleanupFiles option.
     - 1.0.3 BUGFIX: Accept SMB SourceFolder with '$' character in path.
             Commands and logic edited to be compatible with PowerShell 5.1 (Removed PowerShell 6/7 advanced features.)
+    - 1.0.4 Added KeepSessionAlive option.
+            Fixed some errors when conflicting file or folder names are encountered.
 #>
 
 ### Default Parameters
@@ -84,6 +90,7 @@ param (
     [switch]$CreateZip,
     [switch]$CleanupFiles,
 
+    [switch]$KeepSessionAlive,
     [switch]$WhatIf,
     [switch]$NoPrompt,
     [switch]$Quiet,
@@ -94,6 +101,8 @@ param (
     #[string]$RegexPattern = '[^a-zA-Z0-9.-_]', # Remove special characters except for: - _ .
     [string]$ReplacementCharacter = "_" # Can be blank "" to remove the special characters without replacement.
 )
+
+$script:KeepAliveJob = $null
 
 $ParamPropertyLength = ((((Get-Command -Name $MyInvocation.InvocationName).Parameters).Keys | 
     ForEach-Object{$var = Get-Variable -Name $_ -ErrorAction SilentlyContinue; if($var){$var.Name}})| 
@@ -235,23 +244,26 @@ function Rename-Folder {
         # Create a new name with illegal characters removed
         $newName = $Folder.Name -replace $RegexPattern, $ReplacementCharacter
         
-        # Check if folder with same name already exists
-        if (Test-Path -LiteralPath (Join-Path -Path $Folder.Parent -ChildPath $newName)) {
-            for ($i = 1; $i -le 100; $i++) {
-                $newName = "$newName-$i"
-                if (-not (Test-Path -LiteralPath (Join-Path -Path $Folder.Parent -ChildPath $newName))) {
-                    break
+        # Check if the new name is different
+        if ($newName -ne $Folder.Name) {
+
+            # Check if folder with same name already exists
+            if (Test-Path -LiteralPath (Join-Path -Path $Folder.Parent.FullName -ChildPath $newName)) {
+                for ($i = 1; $i -le 100; $i++) {
+                    $testName = "$newName-$i"
+                    if (-not (Test-Path -LiteralPath (Join-Path -Path $Folder.Parent.FullName -ChildPath $testName))) {
+                        $newName = $testName
+                        break
+                    }
                 }
             }
-        }
-        
-        # Rename the folder if the new name is different
-        if ($newName -ne $Folder.Name) {
+            
+            # Rename the folder
             if ($WhatIf) {
                 Rename-Item -LiteralPath $Folder.FullName -NewName $newName -WhatIf
                 New-LogRecord -LogType "RenameFolder" -ActionStatus "expected" -TargetObject $Folder.FullName -Destination "$($Folder.Parent)\$newName"
             } else {
-                $result = Rename-Item -LiteralPath $Folder.FullName -NewName $newName -PassThru
+                $result = Rename-Item -LiteralPath $Folder.FullName -NewName $newName -PassThru -ErrorAction Stop
                 New-LogRecord -LogType "RenameFolder" -ActionStatus "complete" -TargetObject $Folder.FullName -Destination $result.FullName
             }
         }
@@ -273,23 +285,25 @@ function Rename-File {
         $fileExt = $file.Extension
         $newName = "${cleanName}$fileExt"
         
-        # Check if file with same name already exists
-        if (Test-Path -LiteralPath (Join-Path -Path $File.Directory.FullName -ChildPath $newName)) {
-            for ($i = 1; $i -le 100; $i++) {
-                $newName = "${cleanName}-${i}$fileExt"
-                if (-not (Test-Path -LiteralPath (Join-Path -Path $File.Directory.FullName -ChildPath $newName))) {
-                    break
+        # Check if the new name is different from original
+        if ($newName -ne $File.Name) {
+
+            # Check if file with same name already exists and append number to filename if needed.
+            if (Test-Path -LiteralPath (Join-Path -Path $File.Directory.FullName -ChildPath $newName)) {
+                for ($i = 1; $i -le 100; $i++) {
+                    $newName = "${cleanName}-${i}$fileExt"
+                    if (-not (Test-Path -LiteralPath (Join-Path -Path $File.Directory.FullName -ChildPath $newName))) {
+                        break
+                    }
                 }
             }
-        }
 
-        # Rename the file if the new name is different
-        if ($newName -ne $File.Name) {
+            # Rename file
             if ($WhatIf) {
                 Rename-Item -LiteralPath $File.FullName -NewName $newName -WhatIf
                 New-LogRecord -LogType "RenameFile" -ActionStatus "expected" -TargetObject $File.FullName -Destination "$($File.DirectoryName)\$newName"
             } else {
-                $result = Rename-Item -LiteralPath $File.FullName -NewName $newName -PassThru
+                $result = Rename-Item -LiteralPath $File.FullName -NewName $newName -PassThru -ErrorAction Stop
                 New-LogRecord -LogType "RenameFile" -ActionStatus "complete" -TargetObject $File.FullName -Destination $result.FullName
             }
         }
@@ -537,7 +551,7 @@ Start-Transcript -LiteralPath $transcriptPath
 
 $script:ZipFile
 
-Write-Verbose "Script started at: $(Get-Timestamp)"
+Write-Output "Script started at: $(Get-Timestamp)"
 try {
 # Log and validate initial parameters
     $ParameterList = (Get-Command -Name $MyInvocation.InvocationName).Parameters;
@@ -582,9 +596,14 @@ try {
         }
         
         # Verify source directory is available, prompt user if invalid.
-        if(Test-Path -LiteralPath $SourceFolder){
-            New-LogRecord -LogType "VerifyFolder" -ActionStatus "completed" -TargetObject $SourceFolder
-        }else{
+        try{
+            if(Test-Path -LiteralPath $SourceFolder){
+                New-LogRecord -LogType "VerifyFolder" -ActionStatus "completed" -TargetObject $SourceFolder
+            }else{
+                Initialize-SourceFolder
+            }
+        }
+        catch{
             Initialize-SourceFolder
         }
 
@@ -625,8 +644,26 @@ try {
         }
     }
 
+# Launch background KeepAlive process.
+if($KeepSessionAlive){
+    $ScriptBlock = {
+        $wsh = New-Object -ComObject WScript.Shell
+        while($true){
+            $wsh.SendKeys('+{F15}')
+            Start-Sleep -Seconds 60
+        }
+    }
+    try{
+        $script:KeepAliveJob = Start-Job -ScriptBlock $ScriptBlock
+        New-LogRecord -LogType "StartJob" -ActionStatus "completed" -TargetObject "KeepAliveJob"
+    }
+    catch{
+        New-LogRecord -LogType "StartJob" -ActionStatus "error" -TargetObject "KeepAliveJob" -ErrMsg $_.Exception.Message
+    }
+}
 
-#Begin folder processing
+
+# Begin folder processing
     $SourceFolderStats = Get-DirectoryStats $SourceFolder
     
     if($ModifyOriginal -and $ConfirmDestructiveProcess){
@@ -691,7 +728,7 @@ try {
                 Write-Output "[$(Get-Timestamp)] Will not delete destination folder when -ModifyOriginal is enabled"
                 Write-Output "[$(Get-Timestamp)]"
             }else{
-                if((Test-Path -LiteralPath $ZipFile.FullName) -and (Get-Item $ZipFile).Length -gt 0){
+                if((Test-Path -LiteralPath $ZipFile) -and (Get-Item $ZipFile).Length -gt 0){
                     # Delete destination folder
                     Write-Output "[$(Get-Timestamp)] Cleanup: deleting destination folder"
                     Invoke-CleanupFiles -FolderToDelete $CopyDestination
@@ -701,7 +738,7 @@ try {
             $CopyDestinationStats = Get-DirectoryStats $CopyDestination
         }
     }
-    Write-Verbose "Script completed at: $(Get-Timestamp)"
+    Write-Output "Script completed at: $(Get-Timestamp)"
 }
 catch {
     New-LogRecord -LogType "ScriptError" -ActionStatus "error" -TargetObject "Script" -ErrMsg $_.Exception.Message
@@ -766,13 +803,22 @@ finally {
                     Group-Object -Property LogType | 
                     Select-Object Name, Count
     $padSize = ($summary.Name | Measure-Object -Maximum -Property Length).Maximum
-    $summary | 
-        ForEach-Object {
+    $summary | ForEach-Object {
             Write-Output "$(($_.Name).PadRight($padSize, " ")): $($_.Count)"
         }
-
+    
+    # Stop KeepAlive Job
+    if($script:KeepAliveJob){
+        try{
+            ($script:KeepAliveJob).StopJob()
+            Write-Output ""
+            New-LogRecord -LogType "StopJob" -ActionStatus "completed" -TargetObject "KeepAliveJob"
+        }
+        catch{
+        }
+    }
     Stop-Transcript
 }
 
 # Clean up
-Write-Output "[$(Get-Timestamp)] Script completed. Log and transcript saved to $PSScriptRoot\Logs\"
+Write-Output "`n[$(Get-Timestamp)] Script completed. Log and transcript saved to $PSScriptRoot\Logs\"
